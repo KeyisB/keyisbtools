@@ -1,5 +1,3 @@
-# keyring_bytes.py
-import base64
 import secretstorage
 
 
@@ -22,15 +20,13 @@ class KeyringBytes:
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("data must be bytes")
 
-        encoded = base64.b64encode(data).decode("ascii")
-
         self.collection.create_item(
             label=f"{self.service}:{key}",
             attributes={
                 "service": self.service,
                 "key": key,
             },
-            secret=encoded,
+            secret=data,
             replace=True,
         )
 
@@ -38,10 +34,10 @@ class KeyringBytes:
         if not isinstance(key, str):
             raise TypeError("key must be str")
 
-        items = self.collection.search_items({
+        items = list(self.collection.search_items({
             "service": self.service,
             "key": key,
-        })
+        }))
 
         if not items:
             return None
@@ -50,14 +46,13 @@ class KeyringBytes:
         if item.is_locked():
             item.unlock()
 
-        encoded = item.get_secret().decode("ascii")
-        return base64.b64decode(encoded)
+        return item.get_secret()
 
     def delete(self, key: str) -> bool:
-        items = self.collection.search_items({
+        items = list(self.collection.search_items({
             "service": self.service,
             "key": key,
-        })
+        }))
         if not items:
             return False
         for item in items:
