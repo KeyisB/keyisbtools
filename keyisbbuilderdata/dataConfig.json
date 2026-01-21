@@ -1,7 +1,7 @@
 {
     "requirements": [
-        "cryptography",
-        "msgpack",
-        "pycryptodome"
+        "KeyisBTools",
+        "zstandard",
+        "secretstorage"
     ]
 }
