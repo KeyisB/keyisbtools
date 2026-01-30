@@ -47,3 +47,11 @@ def mix_bytes_with_int(data: bytes, n: int) -> bytes:
 
 def xor(a: bytes, b: bytes) -> bytes:
     return bytes(a[i % len(a)] ^ b[i % len(b)] for i in range(max(len(a), len(b))))
+
+def xor_max(a: bytes, b: bytes) -> bytes:
+    if len(a) < len(b):
+        a = (a * (len(b) // len(a) + 1))[:len(b)]
+    elif len(b) < len(a):
+        b = (b * (len(a) // len(b) + 1))[:len(a)]
+    return bytes(x ^ y for x, y in zip(a, b))
+
