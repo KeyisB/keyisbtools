@@ -2,6 +2,9 @@
     "requirements": [
         "KeyisBTools",
         "zstandard",
-        "secretstorage"
+        "secretstorage",
+        "msgpack",
+        "pycryptodome",
+        "cryptography"
     ]
 }
