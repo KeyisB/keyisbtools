@@ -49,7 +49,6 @@ s1 = S1()
 
 
 
-
 class S2:
     def __init__(self, V: bytes = b"KeyisB-c-s-m1"):
         self.__V = V; self.__C = {}; self.__lock = threading.Lock()
@@ -99,10 +98,6 @@ class S2:
         return await asyncio.to_thread(self.verify, k, s, ttl, kh)
 
 s2 = S2()
-
-
-
-
 
 
 
@@ -165,3 +160,43 @@ class S3:
         return b.digest()
 
 s3 = S3()
+
+
+
+class S4:
+    def __init__(self,V:bytes=b"KeyisB-c-s-s4"):
+        self.__V=V;self.__C={};self.__lock=threading.Lock()
+    def __norm(self,k:bytes,kh:bool)->bytes:
+        return k if kh else hashlib.sha3_512(k).digest()
+    def __mix(self,base:bytes,info:bytes,l:int):
+        salt=hashlib.sha3_512(self.__V+b"|salt|"+base).digest()
+        hkdf=HKDF(algorithm=hashes.SHA3_512(),length=l,salt=salt,info=self.__V+b"|HKDF|"+info)
+        o=hkdf.derive(base);sh=hashlib.shake_256();sh.update(self.__V+b"|SHAKE|"+info+base);s=sh.digest(l)
+        return bytes(a^b for a,b in zip(o,s))
+    def __derive(self,k:bytes,kh:bool=False):
+        base=self.__norm(k,kh)
+        with self.__lock:
+            if base in self.__C:return self.__C[base]
+        m=self.__mix(base,b"derive-v4",128);ak,bl=m[:64],m[64:128]
+        with self.__lock:self.__C[base]=(ak,bl)
+        return ak,bl
+    def sign(self,k:bytes)->bytes:
+        ak,bl=self.__derive(k,False);k1,k2=ak[:32],ak[32:64];n1=os.urandom(12);n2=os.urandom(12);t=int(time.time()).to_bytes(8,"big")
+        base=self.__norm(k,False);st=hashlib.sha3_512(base+base).digest();m=t+os.urandom(32)+st;aad=self.__V+b"|AEAD|v4"
+        ct1=ChaCha20Poly1305(k1).encrypt(n1,m,aad);ct2=ChaCha20Poly1305(k2).encrypt(n2,ct1,aad)
+        b=hashlib.blake2b(digest_size=32,key=bl);b.update(n1);b.update(n2);b.update(ct2);b.update(aad)
+        return n1+n2+ct2+b.digest()
+    def verify(self,k:bytes,s:bytes,ttl:int=15,kh:bool=False)->bool:
+        if len(s)<24+16+8+32+32:return False
+        ak,bl=self.__derive(k,kh);k1,k2=ak[:32],ak[32:64];n1,n2,ct,btag=s[:12],s[12:24],s[24:-32],s[-32:]
+        aad=self.__V+b"|AEAD|v4";b=hashlib.blake2b(digest_size=32,key=bl);b.update(n1);b.update(n2);b.update(ct);b.update(aad)
+        if not constant_time.bytes_eq(b.digest(),btag):return False
+        try:ct1=ChaCha20Poly1305(k2).decrypt(n2,ct,aad);m=ChaCha20Poly1305(k1).decrypt(n1,ct1,aad)
+        except Exception:return False
+        if len(m)<8+32+64:return False
+        ts=int.from_bytes(m[:8],"big");now=int(time.time())
+        if (now-ts if now>=ts else ts-now)>ttl:return False
+        base=self.__norm(k,kh);st=hashlib.sha3_512(base+base).digest()
+        return m.endswith(st)
+
+s4=S4()
