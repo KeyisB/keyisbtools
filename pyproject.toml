@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "KeyisBTools"
-version = "0.0.26"
+version = "0.0.28"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -3,7 +3,13 @@ import time
 from typing import Optional, Any, overload, Callable
 
 class TTLDict:
-    def __init__(self, default_ttl: int = 60, cleanup_interval: int = 300, cleanup_callback: Optional[Callable] = None, loop: Optional[asyncio.AbstractEventLoop] = None):
+    def __init__(self,
+        default_ttl: int = 60,
+        cleanup_interval: int = 300,
+        cleanup_callback: Optional[Callable] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        lazy_ttl: Optional[int] = None
+        ):
         """
         :param default_ttl: TTL по умолчанию (сек), если при записи не указан
         :param cleanup_interval: периодическая очистка от просроченных ключей (сек),
@@ -12,15 +18,21 @@ class TTLDict:
         """
         self._store = {}
         self._default_ttl = default_ttl
+        self._lazy_ttl = lazy_ttl
         self._cleanup_interval = cleanup_interval
         self._cleanup_callback = cleanup_callback
         self._task = None
         self._loop = loop
 
-    def set(self, key, value, ttl: Optional[int] = None):
+    def set(self, key, value, ttl: Optional[int] = None, lazy_ttl: Optional[int] = None):
         if ttl is None:
             ttl = self._default_ttl
-        self._store[key] = (value, time.monotonic() + ttl)
+        if lazy_ttl is None:
+            lazy_ttl = self._lazy_ttl
+        t = time.monotonic()
+        expire_at = t + ttl
+        lazy_expire_at = t + lazy_ttl if lazy_ttl is not None else None
+        self._store[key] = (value, expire_at, lazy_expire_at)
 
 
         if self._task is None and self._cleanup_interval != -1:
@@ -36,12 +48,33 @@ class TTLDict:
         item = self._store.get(key)
         if not item:
             return default
-        value, expire_at = item
+        value, expire_at, lazy_expire_at = self._unpack_item(item)
         now = time.monotonic()
+        if lazy_expire_at is not None and lazy_expire_at < now:
+            self._delete_expired(key)
+            return default
         if expire_at < now:
+            if lazy_expire_at is not None:
+                return default
             self._delete_expired(key)
             return default
         return value
+
+    def getLazy(self, key: Any, default=None) -> tuple[Any, bool]:
+        item = self._store.get(key)
+        if not item:
+            return default, False
+        value, expire_at, lazy_expire_at = self._unpack_item(item)
+        now = time.monotonic()
+        if lazy_expire_at is not None and lazy_expire_at < now:
+            self._delete_expired(key)
+            return default, False
+        if expire_at < now:
+            if lazy_expire_at is not None:
+                return value, True
+            self._delete_expired(key)
+            return default, False
+        return value, False
 
     def __setitem__(self, key, value):
         self.set(key, value, self._default_ttl)
@@ -56,9 +89,12 @@ class TTLDict:
         item = self._store.get(key)
         if not item:
             return False
-        _, exp = item
-        if exp < time.monotonic():
+        _, exp, lazy_exp = self._unpack_item(item)
+        now = time.monotonic()
+        if lazy_exp is not None and lazy_exp < now:
             self._delete_expired(key)
+            return False
+        if exp < now:
             return False
         return True
 
@@ -70,10 +106,12 @@ class TTLDict:
 
     def __iter__(self):
         now = time.monotonic()
-        for k, (_, exp) in list(self._store.items()):
-            if exp < now:
+        for k, item in list(self._store.items()):
+            _, exp, lazy_exp = self._unpack_item(item)
+            if lazy_exp is not None and lazy_exp < now:
                 self._delete_expired(k)
-            else:
+                continue
+            if exp >= now:
                 yield k
 
     def keys(self):
@@ -81,11 +119,27 @@ class TTLDict:
 
     def values(self):
         now = time.monotonic()
-        return [v for k, (v, exp) in list(self._store.items()) if exp >= now]
+        values = []
+        for k, item in list(self._store.items()):
+            value, exp, lazy_exp = self._unpack_item(item)
+            if lazy_exp is not None and lazy_exp < now:
+                self._delete_expired(k)
+                continue
+            if exp >= now:
+                values.append(value)
+        return values
 
     def items(self):
         now = time.monotonic()
-        return [(k, v) for k, (v, exp) in list(self._store.items()) if exp >= now]
+        items = []
+        for k, item in list(self._store.items()):
+            value, exp, lazy_exp = self._unpack_item(item)
+            if lazy_exp is not None and lazy_exp < now:
+                self._delete_expired(k)
+                continue
+            if exp >= now:
+                items.append((k, value))
+        return items
 
     def update(self, other):
         for k, v in other.items():
@@ -113,8 +167,16 @@ class TTLDict:
         item = self._store.pop(key, None)
         if item is None:
             return default
-        value, exp = item
-        if exp < time.monotonic():
+        value, exp, lazy_exp = self._unpack_item(item)
+        now = time.monotonic()
+        if lazy_exp is not None and lazy_exp < now:
+            if self._cleanup_callback:
+                try:
+                    self._cleanup_callback(key)
+                except Exception:
+                    pass
+            return default
+        if exp < now:
             if self._cleanup_callback:
                 try:
                     self._cleanup_callback(key)
@@ -142,7 +204,12 @@ class TTLDict:
     def cleanup(self):
         """Удалить все просроченные ключи"""
         now = time.monotonic()
-        expired = [k for k, (_, exp) in self._store.items() if exp < now]
+        expired = []
+        for key, item in self._store.items():
+            _, exp, lazy_exp = self._unpack_item(item)
+            effective_expire_at = lazy_exp if lazy_exp is not None else exp
+            if effective_expire_at < now:
+                expired.append(key)
         cb = self._cleanup_callback
         if cb:
             for k in expired:
@@ -154,6 +221,12 @@ class TTLDict:
         else:
             for k in expired:
                 self._store.pop(k, None)
+
+    def _unpack_item(self, item):
+        if len(item) == 2:
+            value, expire_at = item
+            return value, expire_at, None
+        return item
 
     async def stop(self):
         """Остановить фон очистки"""
