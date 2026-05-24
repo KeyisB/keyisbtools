@@ -3,7 +3,7 @@ import hmac
 import hashlib
 from typing import overload
 
-SAFE="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz2346789"
+SAFE="0123456789"
 FULL="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 class userFriendly:
